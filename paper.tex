@@ -54,26 +54,15 @@ decisions: continuous price series, high-frequency unstructured text processed
 through a financial language model, and discrete low-frequency corporate
 filings. The central difficulty is not modelling each modality in isolation but
 fusing them coherently under severe asymmetries in frequency, dimensionality and
-availability. We propose a four-branch network that couples a patch-based
-temporal encoder, an attention pooling module over FinBERT news embeddings, a
-filing projection with temporal decay, and a per-day scalar encoder, integrated
-through a gated fusion layer that masks branches whose evidence is absent or
-inapplicable to the instrument. The architecture is validated on the FinMMEval
-Task~3 corpus (twelve assets spanning equities and cryptocurrencies). We
-contribute three engineering decisions: a per-asset volatility-adaptive
-labelling scheme, the decoupling of model optimization from decision-threshold
-optimization to curb overfitting on a temporally small validation set, and the
-use of Stochastic Weight Averaging (SWA). On the held-out test partition the
-validation-selected model attains a cumulative return of \textbf{23.3\%}, an
-annualized Sharpe ratio of \textbf{4.21}, and a maximum drawdown of
-\textbf{4.45\%}. We deliberately frame this as a validation-selected operating
-point rather than an expected value: across five seeds the test Sharpe varies
-widely (standard deviation $\approx 1.9$), a direct consequence of the short
-evaluation window. We further document two negative results---SWA does not raise
-the across-seed mean, and prediction ensembles degraded out-of-sample
-performance---and argue that in this low-data regime the binding constraint is
-the experimental protocol rather than model capacity. All metrics are reported
-with explicit statistical caveats.
+availability. We propose a four-branch architecture---patch-based temporal encoder, FinBERT
+attention-pooled news, decayed filing projection, per-day scalar
+encoder---fused via a gated layer with availability masking. The architecture is validated on the FinMMEval
+Task~3 corpus~\cite{qian2025agents} (twelve assets spanning equities and cryptocurrencies). With per-asset volatility-adaptive labelling, decoupled decision optimization,
+and SWA, the validation-selected model attains \textbf{23.3\%} cumulative
+return, a \textbf{4.21} Sharpe, and \textbf{4.45\%} max drawdown. We frame these as validation-selected operating points: across five seeds test
+Sharpe varies widely ($\sigma \approx 1.9$). Two negative results---SWA does
+not raise the across-seed mean, and ensembles degraded---suggest the binding
+constraint is the experimental protocol, not model capacity.
 
 \keywords{Multimodal fusion \and Deep learning \and Financial NLP \and FinBERT
 \and Gated attention \and Stochastic Weight Averaging \and FinMMEval.}
@@ -629,88 +618,7 @@ FinMMEval shared task for assembling and releasing the dataset used in this work
 interests.
 \end{credits}
 
-% ---------------------------------------------------------------------------
-\begin{thebibliography}{99}
-
-\bibitem{izmailov2018}
-Izmailov, P., Podoprikhin, D., Garipov, T., Vetrov, D., Wilson, A.G.:
-Averaging Weights Leads to Wider Optima and Better Generalization.
-In: Proc.\ Uncertainty in Artificial Intelligence (UAI), pp.\ 876--885 (2018)
-
-\bibitem{nie2023}
-Nie, Y., Nguyen, N.H., Sinthong, P., Kalagnanam, J.:
-A Time Series is Worth 64 Words: Long-term Forecasting with Transformers.
-In: Int.\ Conf.\ on Learning Representations (ICLR) (2023)
-
-\bibitem{yang2020}
-Yang, Y., Uy, M.C.S., Huang, A.:
-FinBERT: A Pretrained Language Model for Financial Communications.
-arXiv:2006.08097 (2020)
-
-\bibitem{araci2019}
-Araci, D.:
-FinBERT: Financial Sentiment Analysis with Pre-trained Language Models.
-arXiv:1908.10063 (2019)
-
-\bibitem{vaswani2017}
-Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A.N.,
-Kaiser, {\L}., Polosukhin, I.:
-Attention is All You Need.
-In: Advances in Neural Information Processing Systems (NeurIPS), pp.\ 5998--6008 (2017)
-
-\bibitem{loshchilov2019}
-Loshchilov, I., Hutter, F.:
-Decoupled Weight Decay Regularization.
-In: Int.\ Conf.\ on Learning Representations (ICLR) (2019)
-
-\bibitem{arevalo2017}
-Arevalo, J., Solorio, T., Montes-y-G{\'o}mez, M., Gonz{\'a}lez, F.A.:
-Gated Multimodal Units for Information Fusion.
-In: ICLR Workshop Track (2017). arXiv:1702.01992
-
-\bibitem{baltrusaitis2019}
-Baltru\v{s}aitis, T., Ahuja, C., Morency, L.-P.:
-Multimodal Machine Learning: A Survey and Taxonomy.
-IEEE Trans.\ Pattern Anal.\ Mach.\ Intell.\ \textbf{41}(2), 423--443 (2019)
-
-\bibitem{ke2017}
-Ke, G., Meng, Q., Finley, T., Wang, T., Chen, W., Ma, W., Ye, Q., Liu, T.-Y.:
-LightGBM: A Highly Efficient Gradient Boosting Decision Tree.
-In: Advances in Neural Information Processing Systems (NeurIPS), pp.\ 3146--3154 (2017)
-
-\bibitem{ding2015}
-Ding, X., Zhang, Y., Liu, T., Duan, J.:
-Deep Learning for Event-Driven Stock Prediction.
-In: Proc.\ Int.\ Joint Conf.\ on Artificial Intelligence (IJCAI), pp.\ 2327--2333 (2015)
-
-\bibitem{hu2018}
-Hu, Z., Liu, W., Bian, J., Liu, X., Liu, T.-Y.:
-Listening to Chaotic Whispers: A Deep Learning Framework for News-oriented Stock
-Trend Prediction.
-In: Proc.\ ACM Int.\ Conf.\ on Web Search and Data Mining (WSDM), pp.\ 261--269 (2018)
-
-\bibitem{sezer2020}
-Sezer, O.B., Gudelek, M.U., Ozbayoglu, A.M.:
-Financial Time Series Forecasting with Deep Learning: A Systematic Literature
-Review: 2005--2019.
-Applied Soft Computing \textbf{90}, 106181 (2020)
-
-\bibitem{szegedy2016}
-Szegedy, C., Vanhoucke, V., Ioffe, S., Shlens, J., Wojna, Z.:
-Rethinking the Inception Architecture for Computer Vision.
-In: Proc.\ IEEE Conf.\ on Computer Vision and Pattern Recognition (CVPR),
-pp.\ 2818--2826 (2016)
-
-\bibitem{lopezdeprado2018}
-L{\'o}pez de Prado, M.:
-Advances in Financial Machine Learning.
-Wiley, Hoboken, NJ (2018)
-
-\bibitem{sharpe1994}
-Sharpe, W.F.:
-The Sharpe Ratio.
-Journal of Portfolio Management \textbf{21}(1), 49--58 (1994)
-
-\end{thebibliography}
+\bibliographystyle{splncs04}
+\bibliography{references}
 
 \end{document}

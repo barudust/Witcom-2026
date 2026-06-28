@@ -14,7 +14,11 @@
 *.snm
 *.vrb
 
+build/
+
 # OS / editor
 .DS_Store
 Thumbs.db
 *.swp
+
+

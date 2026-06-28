@@ -23,11 +23,18 @@ Requires a LaTeX distribution (TeX Live / MiKTeX). The `llncs` class is part of
 the standard distributions and installs automatically on first run with MiKTeX.
 
 ```bash
-pdflatex paper.tex
-pdflatex paper.tex   # second pass resolves \ref / \cite
+latexmk -pdf paper.tex
 ```
 
-No BibTeX run is needed: references use an inline `thebibliography`.
+Or manually (four-step sequence):
+```bash
+pdflatex paper.tex
+bibtex paper
+pdflatex paper.tex
+pdflatex paper.tex   # final pass resolves all \ref / \cite
+```
+
+References use BibTeX with `splncs04.bst` and `references.bib`.
 
 ## A note on figure formats
 
