@@ -72,7 +72,7 @@ constraint is the experimental protocol, not model capacity.
 \section{Introduction}
 % ---------------------------------------------------------------------------
 Predicting the short-term direction of financial assets is a canonical testbed
-for multimodal learning. Market behaviour emerges from the interaction of price
+for multimodal learning~\cite{Shakeel2026,jiang2025multi}. Market behaviour emerges from the interaction of price
 dynamics, the flow of textual information, and discrete corporate events, each
 differing in sampling frequency, granularity and semantics. The engineering
 challenge is to design an architecture that \emph{synchronizes and weights}
@@ -89,13 +89,12 @@ Our contributions are: (i) a four-branch architecture with \emph{gated fusion
 and availability masking}, where each modality can be differentiably silenced
 when its evidence is null or inapplicable; (ii) a \emph{per-asset
 volatility-adaptive labelling} scheme that balances the class distribution
-across instruments with disparate volatility profiles; (iii) a training protocol
+across instruments that exhibit widely different volatilities; (iii) a training protocol
 that \emph{separates model optimization from decision optimization}, fixing the
 activation threshold during training and tuning it only once at evaluation; (iv)
 the integration of \emph{Stochastic Weight Averaging} (SWA)~\cite{izmailov2018}
-as an implicit regularizer, with an ablation quantifying its effect; and (v) a
-transparent \emph{negative result} on ensembling, which degraded out-of-sample
-performance in our low-data regime.
+as an implicit regularizer, with an ablation quantifying its effect; and (v) a documented failure mode: ensembling degrades out-of-sample
+performance under short evaluation windows.
 
 % ---------------------------------------------------------------------------
 \section{Related Work}
@@ -116,7 +115,9 @@ mechanism we extend with an explicit availability mask so that inapplicable
 modalities (e.g.\ filings for cryptocurrencies) are excluded by construction.
 On the optimization side, SWA~\cite{izmailov2018} averages weights along the
 training trajectory to reach flatter optima that generalize better, and
-decoupled weight decay~\cite{loshchilov2019} stabilizes adaptive optimizers.
+AdamW's decoupled weight decay~\cite{loshchilov2019} stabilizes training by
+applying L2 regularization independently of the adaptive per-parameter learning
+rates.
 For labelling, the difficulty of defining directional targets under
 non-stationary volatility is discussed in the financial machine-learning
 literature~\cite{lopezdeprado2018}; we adopt a per-asset percentile dead-zone
@@ -125,36 +126,145 @@ instead of a global static threshold.
 % ---------------------------------------------------------------------------
 \section{Problem Formulation and Data}
 % ---------------------------------------------------------------------------
-\subsection{Multimodal formulation}
-For an asset at day $t$ we observe
-$\mathcal{X}_t = \{\mathbf{S}_t,\ \mathcal{N}_t,\ \mathcal{E}_t\}$, where
-$\mathbf{S}_t \in \mathbb{R}^{L \times d_s}$ is a window of $L$ days of scalar
-technical features, $\mathcal{N}_t=\{n_t^{(1)},\dots,n_t^{(k_t)}\}$ is a
-variable-size set of news headlines, and $\mathcal{E}_t$ encodes corporate
-filings (10-K, 10-Q). The goal is a function
-$f_\theta:\mathcal{X}_t \mapsto y_t \in \{\textsc{sell},\textsc{hold},\textsc{buy}\}$
-producing one daily recommendation per asset.
+For each asset on a given day $t$, the model observes three distinct sources
+of evidence that collectively form the multimodal input
+$\mathcal{X}_t = \{\mathbf{S}_t,\ \mathcal{N}_t,\ \mathcal{E}_t\}$. The first modality is a price-and-indicator window $\mathbf{S}_t$. This is a
+matrix of size $L \times d_s$, where $L = 30$ is the look-back window in
+trading days and $d_s = 19$ is the number of hand-crafted scalar
+features---returns, volatilities, RSI,
+MACD, etc.---where each row represents one trading day and each column one feature.
+The second modality $\mathcal{N}_t$ consists of news headlines. On a day with $k_t$
+headlines---where $k_t$ varies per day and can be zero---the set is denoted
+$\mathcal{N}_t = \{n_t^{(1)}, \dots, n_t^{(k_t)}\}$. Each headline $n_t^{(i)}$
+is a short text string that will later be embedded by a financial language
+model. The third modality $\mathcal{E}_t$ captures corporate filings. We denote by $\mathcal{E}_t$ the
+set of filings (10-K annual reports and 10-Q quarterly reports) that are active
+on day $t$, represented through their pre-computed embeddings. Unlike news,
+filings are discrete events: they appear infrequently and apply only to equity
+instruments, not to cryptocurrencies. Given these inputs, the goal is a learned function
+$f_\theta : \mathcal{X}_t \mapsto y_t \in
+\{\textsc{sell},\textsc{hold},\textsc{buy}\}$ that produces one daily
+directional recommendation per asset.
 
 \subsection{Corpus}
-The corpus is provided by the \emph{FinMMEval Task~3} framework and is built from
+The corpus is provided by the \emph{FinMMEval Task~3} framework~\cite{qian2025agents} and is built from
 the publicly released \texttt{daily\_news} collection accessed from the Hugging
 Face Hub (\texttt{TheFinAI/daily\_news}). It comprises twelve assets---ten US equities (AAPL, ADBE, AMZN,
 BMRN, GOOGL, META, MRNA, MSFT, NVDA, TSLA) and two cryptocurrencies (BTC,
-ETH)---over the period 2025-08-01 to 2026-04-25. Each daily record contains the
-closing price, a momentum tag, the set of news for the day, and optional
-filings. Table~\ref{tab:dataset} summarizes the dataset after preprocessing.
+ETH)---over the period 2025-08-01 to 2026-04-25. Each daily record contains four fields: the closing price, a momentum tag, the set of news headlines for the day, and optional filings (10-K annual reports and 10-Q quarterly reports). News coverage spans all trading days for every asset; filings are available only for equities. The raw corpus contains 2{,}446 daily records in total.
 
-For equities, weekend and holiday records (no trading) are removed and their
-news are carried forward to the next trading day with an exponential temporal
-decay $w=\exp(-\lambda\,\Delta_{\text{days}})$, $\lambda=0.18$, so that Friday
-news reaching Monday retain weight $\approx 0.70$. Cryptocurrencies trade seven
-days a week and require no consolidation. Temporal splits are performed per asset
-(65\%/15\%/20\%) and concatenated, preserving chronological order and preventing
-look-ahead leakage.
+Preprocessing steps---weekend consolidation, news decay weighting, feature engineering, and target construction---are described in the next section.
+
+% ---------------------------------------------------------------------------
+\section{Methodology}
+% ---------------------------------------------------------------------------
+Having defined the multimodal input space and described the raw corpus, we now
+detail the pipeline that transforms raw records into trainable tensors. We begin
+with data preprocessing and labeling, then present the architecture, the gated
+fusion mechanism, and the training protocol.
+
+\subsection{Data preprocessing and labeling}
+
+\paragraph{Weekend and holiday consolidation.}
+For equities, weekend and holiday records are removed because US markets do
+not operate on those days. Their associated news are carried forward to the
+next trading day with an exponential temporal decay. The carry-forward weight
+is $w = \exp(-\lambda\,\Delta_{\text{days}})$ where $\lambda = 0.18$ and
+$\Delta_{\text{days}}$ counts only the number of non-trading days between the
+original and the target date. For example, Friday news moved to Monday have
+$\Delta_{\text{days}} = 2$ (Saturday and Sunday), yielding
+$w = \exp(-0.18 \times 2) \approx 0.70$; the same logic applies to multi-day
+holiday breaks. Cryptocurrencies trade seven days a week and therefore require
+no consolidation.
+
+\paragraph{Feature engineering.}
+A single feature-engineering module is shared between offline training and the
+serving runtime, guaranteeing reproducibility. From roughly sixty candidate
+indicators (returns at multiple horizons, realized volatilities, RSI, MACD,
+Bollinger position, trend slopes, calendar dummies, news counts, filing-decay
+features and cross-asset proxies) we select $19$ features through the combination
+of Spearman correlation, mutual information, LightGBM~\cite{ke2017} gain under a
+purged walk-forward cross-validation with a five-day embargo, and a variance
+inflation factor filter to remove collinear variables.
+
+\paragraph{Target construction.}
+Let $t$ index trading days and $a \in \{1,\dots,12\}$ index assets. The label
+for asset $a$ on day $t$ is based on the one-day-ahead realized return
+\begin{equation}
+r_{t,a} = \frac{p_{t+1,a} - p_{t,a}}{p_{t,a}},
+\end{equation}
+where $p_{t,a}$ is the closing price. A positive $r$ means the asset rose; a
+negative $r$ means it fell.
+
+Because volatility differs across instruments --- MSFT moves less per day than
+ETH --- a fixed threshold would either over-label the volatile ones (capturing
+noise as signals) or under-label the stable ones (missing genuine moves). We
+therefore estimate a \emph{per-asset} dead-zone threshold $\tau_a$. The
+dead-zone is the interval $[-\tau_a, +\tau_a]$ inside which the return is
+deemed too small to act on (label: \textsc{hold}); outside it the direction
+determines the signal.
+
+The threshold $\tau_a$ is set to the $q$-th percentile of the absolute daily
+returns $|r_{s,a}|$ observed over an initial in-sample window $W_a$ for that
+asset (the first $70\%$ of its time series). Here $\mathrm{P}_q$ denotes the
+$q$-th percentile function (so $\mathrm{P}_{33}$ is the 33rd percentile) and
+$s$ indexes the days contained in $W_a$:
+\begin{equation}
+\tau_a = \mathrm{P}_{q}\big(\{|r_{s,a}| : s \in W_a\}\big),
+\qquad q = 33.
+\end{equation}
+Using absolute returns ensures we measure \emph{magnitude} only, ignoring
+direction. With $q = 33$, roughly one third of the days in $W_a$ fall above
+$+\tau_a$ (label: \textsc{buy}), one third below $-\tau_a$ (label:
+\textsc{sell}), and one third inside the dead-zone (label: \textsc{hold}).
+Because the percentile is computed per asset, this balance holds
+independently of each instrument's volatility level.
+
+The categorical label for each day $t$ and asset $a$ is therefore
+\begin{equation}
+y_{t,a}=
+\begin{cases}
+\textsc{buy}, & r_{t,a} > +\tau_a,\\[2pt]
+\textsc{sell}, & r_{t,a} < -\tau_a,\\[2pt]
+\textsc{hold}, & |r_{t,a}| \le \tau_a.
+\end{cases}
+\end{equation}
+Aggregated across all twelve assets, this procedure yields the near-uniform
+class counts reported in Table~\ref{tab:dataset}.
+In contrast, a static global threshold would under-represent the active class
+for low-volatility instruments and over-represent noise for volatile ones.
+The per-asset percentile instead produces thresholds ranging from $0.18\%$ (MSFT)
+to $0.86\%$ (ETH), which track each instrument's volatility and keep the three
+classes approximately balanced. Additionally, an
+auxiliary regression target---the return normalized by a 20-day rolling realized
+volatility, lagged one day to avoid leakage---supervises a secondary head.
+
+\paragraph{Temporal splits and tensorization.}
+With the features and labels defined, the data is split temporally per asset
+into train ($65\%$), validation ($15\%$), and test ($20\%$) partitions. The
+per-asset splits are then concatenated, preserving chronological order and
+preventing look-ahead leakage.
+
+\paragraph{On the estimation window and look-ahead.}
+The window $W_a$ (first $70\%$) is slightly wider than the $65\%$ training split,
+so it overlaps the first few validation days; it never reaches the test
+partition. This is deliberate and has no measurable effect on the reported
+results, for two reasons. First, $\tau_a$ is a single per-asset \emph{magnitude}
+derived from $|r|$ (no directional or future information) and, empirically,
+recomputing it on the strict $65\%$ training split leaves \emph{all} $360$
+validation labels unchanged and alters only $2$ of $496$ test labels ($0.4\%$);
+model selection, which is performed on validation, is therefore invariant.
+Second, the headline financial metrics (CR, SR, MD, DV, AV) are computed from
+realized returns and the model's discrete signals and are \emph{independent of}
+$\tau_a$, which enters only the auxiliary classification metrics (accuracy and
+macro-F1). The reported test performance is thus free of look-ahead.
+
+Finally, Table~\ref{tab:dataset} summarizes the resulting dataset after all preprocessing
+steps.
 
 \begin{table}[t]
 \centering
-\caption{Dataset summary after weekend consolidation and tensorization.}
+\caption{Dataset summary after preprocessing and tensorization.}
 \label{tab:dataset}
 \begin{tabular}{ll}
 \toprule
@@ -174,59 +284,6 @@ News / filings coverage & all days / equities only \\
 \bottomrule
 \end{tabular}
 \end{table}
-
-% ---------------------------------------------------------------------------
-\section{Methodology}
-% ---------------------------------------------------------------------------
-\subsection{Feature engineering and dynamic labelling}
-A single feature-engineering module is shared between offline training and the
-serving runtime, guaranteeing reproducibility. From roughly sixty candidate
-indicators (returns at multiple horizons, realized volatilities, RSI, MACD,
-Bollinger position, trend slopes, calendar dummies, news counts, filing-decay
-features and cross-asset proxies) we select $19$ features through the combination
-of Spearman correlation, mutual information, LightGBM~\cite{ke2017} gain under a
-purged walk-forward cross-validation with a five-day embargo, and a variance
-inflation factor filter to remove collinear variables.
-
-\paragraph{Target construction.}
-Let $r_{t,a}=(p_{t+1,a}-p_{t,a})/p_{t,a}$ be the one-day-ahead realized return.
-A per-asset \emph{dead-zone} threshold $\tau_a$ is estimated as the
-$q$-th percentile of $|r|$ over an initial in-sample window $W_a$ of each asset
-(the first $70\%$ of its series):
-\begin{equation}
-\tau_a = \mathrm{P}_{q}\big(\{|r_{s,a}| : s \in W_a\}\big),
-\qquad q = 33,
-\end{equation}
-and the categorical label is
-\begin{equation}
-y_{t,a}=
-\begin{cases}
-\textsc{buy}, & r_{t,a} > +\tau_a,\\
-\textsc{sell}, & r_{t,a} < -\tau_a,\\
-\textsc{hold}, & |r_{t,a}| \le \tau_a.
-\end{cases}
-\end{equation}
-A static global threshold under-represents the active class for low-volatility
-instruments and over-represents noise for volatile ones. The per-asset
-percentile produces thresholds ranging from $0.18\%$ (MSFT) to $0.86\%$ (ETH),
-which track each instrument's volatility and keep the three classes
-approximately balanced (Table~\ref{tab:dataset}). An auxiliary regression target,
-the return normalized by a 20-day rolling realized volatility (lagged one day to
-avoid leakage), supervises a secondary head.
-
-\paragraph{On the estimation window and look-ahead.}
-The window $W_a$ (first $70\%$) is slightly wider than the $65\%$ training split,
-so it overlaps the first few validation days; it never reaches the test
-partition. This is deliberate and has no measurable effect on the reported
-results, for two reasons. First, $\tau_a$ is a single per-asset \emph{magnitude}
-derived from $|r|$ (no directional or future information) and, empirically,
-recomputing it on the strict $65\%$ training split leaves \emph{all} $360$
-validation labels unchanged and alters only $2$ of $496$ test labels ($0.4\%$);
-model selection, which is performed on validation, is therefore invariant.
-Second, the headline financial metrics (CR, SR, MD, DV, AV) are computed from
-realized returns and the model's discrete signals and are \emph{independent of}
-$\tau_a$, which enters only the auxiliary classification metrics (accuracy and
-macro-F1). The reported test performance is thus free of look-ahead.
 
 \subsection{Architecture}
 \label{sec:methodology-arch}
@@ -277,36 +334,172 @@ parameters are trained.}
 \end{figure}
 
 \paragraph{Branches.}
-(1) A scalar MLP encodes the day-$t$ feature vector. (2) A compact
-PatchTST~\cite{nie2023} encoder segments the 30-day window into non-overlapping
-patches of length five and applies a two-layer transformer with mean pooling.
-(3) News are embedded with a frozen FinBERT (\texttt{finbert-tone})~\cite{yang2020};
-the day's headlines are aggregated by an attention pooling whose query is the
-concatenation of the symbol embedding and the asset-type flag, with attention
-logits additively biased by the temporal decay weight. (4) A filing projection
-encodes the running filing embedding after applying a 45-day half-life decay.
+Table~\ref{tab:branches} summarises the four modality branches; all output
+vectors of dimension $d = 32$, which are then integrated by the gated fusion
+layer. A scalar MLP (Multi-Layer Perceptron) encodes the day-$t$ feature
+vector. A compact PatchTST~\cite{nie2023} encoder segments the 30-day window
+into non-overlapping patches of length five and applies a two-layer transformer
+with mean pooling. News are embedded with a frozen FinBERT
+(\texttt{finbert-tone})~\cite{yang2020}; the day's headlines are aggregated by
+an attention pooling whose query is the concatenation of the symbol embedding
+and the asset-type flag, with attention logits additively biased by the
+temporal decay weight. A filing projection encodes the running filing embedding
+after applying a 45-day half-life decay.
+
+\begin{table}[h]
+\centering
+\caption{Modality branches: input, operation, and output dimension.}
+\label{tab:branches}
+\small
+\begin{tabular}{lll}
+\toprule
+Branch & Input & Operation \\
+\midrule
+Scalar MLP
+  & Day-$t$ feature vector $\mathbf{s}_t \in \mathbb{R}^{19}$
+  & Multi-Layer Perceptron \\
+PatchTST
+  & 30-day window $\mathbf{S}_t \in \mathbb{R}^{30 \times 19}$
+  & Non-overlapping patches (len~5) $\to$ 2-layer transformer $\to$ mean pooling \\
+News attention
+  & Variable-size headline set $\mathcal{N}_t$ (up to~8)
+  & Frozen FinBERT $\to$ attention pooling (query: symbol~emb~$\oplus$~type; bias: decay weight) \\
+Filing projection
+  & Filing embedding $\mathcal{E}_t$
+  & Running embedding $\times$ 45-day half-life decay \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{Gated fusion with availability masking}
-Let $\mathbf{h}_m \in \mathbb{R}^{d}$ be the representation of branch $m$ and
-$a_m\in\{0,1\}$ its availability indicator ($a_{\text{filing}}=0$ for crypto;
-$a_{\text{news}}=0$ on days without news). A gate is computed from the
-concatenation of all branches and modulated by availability:
+Let $m \in \{1,2,3,4\}$ index the four branches (scalar MLP, PatchTST, news
+attention, filing projection). For a given input, branch $m$ produces a
+$d$-dimensional representation $\mathbf{h}_m \in \mathbb{R}^{d}$ (here $d=32$).
+Each branch also has a binary availability indicator $a_m \in \{0,1\}$ that is
+$1$ when the modality is present and $0$ when it is not. Specifically,
+$a_{\text{filing}} = 0$ for cryptocurrencies (which have no filings) and
+$a_{\text{news}} = 0$ on days when no news headlines are available for the
+asset; the other two indicators are always $1$.
+
+We now compute one scalar gate $g_m$ per branch, which controls how much of
+that modality is let through. The gate for branch $m$ should depend not only on
+the branch's own content but also on what the other branches are reporting: for
+instance, if news and filings are both silent, the remaining modalities should
+carry more weight. To achieve this, we first concatenate all four branch
+vectors into a single vector:
+\[
+\mathbf{h}_{\text{all}} = [\mathbf{h}_1 \;\Vert\; \mathbf{h}_2 \;\Vert\;
+\mathbf{h}_3 \;\Vert\; \mathbf{h}_4]
+\quad \in \mathbb{R}^{128}.
+\]
+Since each $\mathbf{h}_m$ has $32$ components and there are $4$ of them, the
+concatenated vector has $4 \times 32 = 128$ components---it is simply one long
+vector that packs all the information together.
+
+A learned matrix $W_g$ then reads this $128$-dimensional vector and produces
+four numbers, one per branch:
+\[
+W_g \in \mathbb{R}^{4 \times 128},
+\qquad
+W_g\,\mathbf{h}_{\text{all}} \in \mathbb{R}^{4}.
+\]
+Concretely, $W_g$ has $4$ rows; the $m$-th row is a $128$-dimensional vector
+of weights. When multiplied by $\mathbf{h}_{\text{all}}$, the $m$-th row
+produces a scalar logit that can draw on all $128$ components---and therefore
+on every branch---to decide how much to let branch $m$ through:
 \begin{equation}
-g_m = \sigma\!\big(W_g\,[\mathbf{h}_1 \Vert \cdots \Vert \mathbf{h}_4]\big)_m \cdot a_m .
+\mathbf{g} = \sigma\!\big(W_g\,\mathbf{h}_{\text{all}}\big),
+\qquad
+g_m = \mathbf{g}_m \cdot a_m .
 \end{equation}
-Gated representations $g_m\mathbf{h}_m$ are refined by light cross-attention
-across the four branches (treated as tokens) and pooled with weights
-proportional to $g_m$. This design prevents the network from being forced to
-integrate non-existent evidence.
+Sigmoid $\sigma$ keeps each gate in $(0,1)$. The availability mask $a_m$
+zeros out the gate entirely when the modality is absent, so the network never
+integrates non-existent evidence.
+
+The gated representation of branch $m$ is $\tilde{\mathbf{h}}_m = g_m
+\mathbf{h}_m$. These four $32$-dimensional vectors are then refined through a
+lightweight cross-attention layer~\cite{vaswani2017} that treats the four
+branches as tokens.
+Let $Q, K, V \in \mathbb{R}^{4 \times 32}$ be matrices whose rows are the
+gated vectors $\tilde{\mathbf{h}}_m$, used for all three roles (each branch
+attends to the others). The attention output is
+\begin{equation}
+A = \operatorname{softmax}\!\left(\frac{Q K^{\mathsf{T}}}{\sqrt{32}}\right) V
+\quad \in \mathbb{R}^{4 \times 32}.
+\end{equation}
+The final fused representation $\mathbf{z} \in \mathbb{R}^{32}$ is the weighted
+average of the four attention outputs, where the weight of each branch is
+proportional to its gate:
+\begin{equation}
+\mathbf{z} = \sum_{m=1}^{4} \frac{g_m}{\sum_{j} g_j} \, A_{m,:}.
+\end{equation}
+This gating-plus-attention design lets the network dynamically suppress
+missing or uninformative modalities while allowing the relevant ones to
+cross-influence each other before the final prediction.
 
 \subsection{Loss, optimization and stabilization}
-The objective is multi-task,
-$\mathcal{L} = \alpha\,\mathcal{L}_{\text{CE}} + (1-\alpha)\,\mathcal{L}_{\text{Huber}}$,
-with $\alpha=0.8$, class-balanced cross-entropy with label
-smoothing~\cite{szegedy2016} of $0.10$, and a Huber loss on the
-volatility-normalized return. We optimize with AdamW~\cite{loshchilov2019} under
-a five-epoch warmup and cosine decay, with gradient clipping and three temporal
-data augmentations (Gaussian feature noise, news dropout, window time-shift).
+\label{sec:methodology-loss}
+The objective combines a classification loss and a regression loss:
+\begin{equation}
+\mathcal{L} = \alpha\,\mathcal{L}_{\text{CE}} + (1-\alpha)\,\mathcal{L}_{\text{Huber}},
+\qquad \alpha = 0.8.
+\end{equation}
+
+\paragraph{Classification loss.}
+Let $C = 3$ be the number of classes (sell, hold, buy). For a sample with true
+label $y \in \{1,\dots,C\}$ and predicted probabilities $\mathbf{p} \in
+\Delta^{C-1}$ (the simplex), the class-balanced cross-entropy with label
+smoothing~\cite{szegedy2016} is
+\begin{equation}
+\mathcal{L}_{\text{CE}} = - \sum_{c=1}^{C} w_c \; \tilde{y}_c \log p_c,
+\end{equation}
+where $w_c = N / (C \cdot N_c)$ balances the classes ($N$ = total samples,
+$N_c$ = samples of class $c$), and $\tilde{y}_c$ is the smoothed label
+distribution
+\begin{equation}
+\tilde{y}_c =
+\begin{cases}
+1 - \varepsilon + \varepsilon / C, & c = y,\\[2pt]
+\varepsilon / C, & c \neq y,
+\end{cases}
+\qquad \varepsilon = 0.10.
+\end{equation}
+Label smoothing discourages the model from assigning full probability to the
+training label, which acts as a regulariser.
+
+\paragraph{Regression loss.}
+The secondary head predicts the volatility-normalised return
+$r^{\text{norm}}_{t,a}$ --- the one-day-ahead return divided by a
+20-day rolling realised volatility, lagged one day to avoid leakage. The loss
+is the Huber~\cite{huber1964} loss with $\delta = 1.0$:
+\begin{equation}
+\mathcal{L}_{\text{Huber}} =
+\begin{cases}
+\frac{1}{2} (r^{\text{pred}} - r^{\text{norm}})^2,
+& |r^{\text{pred}} - r^{\text{norm}}| \leq \delta,\\[4pt]
+\delta \, |r^{\text{pred}} - r^{\text{norm}}| - \frac{1}{2}\delta^2,
+& \text{otherwise}.
+\end{cases}
+\end{equation}
+Huber loss behaves quadratically for small residuals and linearly for large
+ones, making it less sensitive to outliers than mean squared error.
+
+\paragraph{Optimizer and schedule.}
+We optimise the total loss with AdamW~\cite{loshchilov2019}, which decouples
+weight decay from the adaptive gradient updates:
+\begin{equation}
+\theta_{t+1} = \theta_t - \eta_t \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon}
+- \eta_t \lambda \theta_t,
+\end{equation}
+where $\hat{m}_t$ and $\hat{v}_t$ are bias-corrected first and second moments,
+$\eta_t$ is the learning rate, $\lambda$ the weight decay coefficient, and
+$\epsilon$ a small constant. The learning rate follows a five-epoch linear
+warmup followed by a cosine decay to zero over the remaining epochs. We clip
+gradients to a maximum norm of $1.0$ to prevent explosive updates. Three
+temporal augmentations are applied during training: Gaussian noise ($\sigma =
+0.03$) added to the scalar features, random dropout of news headlines
+(probability $0.30$), and a random time shift of $\pm 2$ days applied to the
+price window.
 
 \paragraph{Decoupling decision from optimization.}
 Converting class probabilities into a discrete action requires an activation
@@ -392,21 +585,21 @@ Section~\ref{sec:methodology-arch} and the same corpus and splits. The
 ($d{=}32$, two PatchTST layers, dropout $0.35$) trained under our previous
 protocol, which selected the model on a noisy simulated Sharpe and tuned the
 decision threshold \emph{during} training---the practice this paper argues
-against (Section~4.4). The \emph{base} and \emph{proposed} models use the present
+against (Section~\ref{sec:methodology-loss}). The \emph{base} and \emph{proposed} models use the present
 protocol (fixed training threshold, validation-only threshold tuning); ``base''
 is the non-averaged checkpoint and ``proposed'' applies SWA to it. We stress that
 ``proposed'' denotes the \emph{validation-selected operating point} of our
-protocol, not a method claimed to be universally superior; the across-seed
-analysis (Section~\ref{sec:seed}) qualifies this directly.
+protocol, not a method claimed to be universally superior; the across-seed analysis (Section~\ref{sec:seed}) qualifies this
+directly.
 
 Table~\ref{tab:main} reports test-set performance of the validation-selected
-checkpoints. The proposed SWA model attains the highest cumulative return
+checkpoints alongside the across-seed distribution. The proposed SWA model attains the highest cumulative return
 (\textbf{23.3\%}) and Sharpe ratio (\textbf{4.21}) and the lowest drawdown
 (\textbf{4.45\%}) among the compared checkpoints; the non-averaged model from the
 same seed reaches a Sharpe of $2.88$, and a five-seed ensemble (last row)
 \emph{underperforms} both (Section~\ref{sec:seed}). These are operating points
-selected on validation; Section~\ref{sec:seed} reports the across-seed
-distribution and should be read alongside this table. Figure~\ref{fig:equity}
+selected on validation and should be read alongside the across-seed
+distribution reported in that section. Figure~\ref{fig:equity}
 shows the out-of-sample equity curves: the SWA model is more selective (it opens
 fewer positions at the higher tuned threshold) and produces a smoother trajectory
 in the second half of the test window.
@@ -486,15 +679,16 @@ Third, the wide spread is itself the central empirical message: with $53$ test
 dates, point estimates of risk-adjusted return are statistically fragile and
 must be read as such.
 
+The deployed model is the SWA checkpoint of the validation-selected seed
+(seed~2, highest SWA validation Sharpe, $5.54$); the \emph{base} row reports the
+same seed's non-averaged checkpoint for a controlled within-seed ablation (both
+shown in bold). The last two columns give the across-seed mean and sample
+standard deviation of the test Sharpe.
+
 \begin{table}[t]
 \centering
-\caption{Per-seed validation and test Sharpe for the deployed configuration; the
-operating threshold $\theta$ is tuned on validation per seed. The deployed model
-is the SWA checkpoint of the validation-selected seed (seed~2, highest SWA
-validation Sharpe, $5.54$); the \emph{base} row reports the same seed's
-non-averaged checkpoint for a controlled within-seed ablation (both shown in
-bold). The last two columns give the across-seed mean and sample standard
-deviation of the test Sharpe.}
+\caption{Per-seed validation and test Sharpe. The operating threshold
+$\theta$ is tuned on validation per seed.}
 \label{tab:seed}
 \setlength{\tabcolsep}{4.5pt}
 \begin{tabular}{llccccccc}
@@ -598,7 +792,7 @@ metadata could not be independently verified and is reported as provided.
 % ---------------------------------------------------------------------------
 We presented a gated multimodal architecture that fuses price series, FinBERT
 news embeddings and corporate filings through availability-masked gating, and we
-validated it on the FinMMEval Task~3 corpus. The validation-selected model,
+validated it on the FinMMEval Task~3 corpus~\cite{qian2025agents}. The validation-selected model,
 combining per-asset adaptive labelling, decoupled threshold optimization and
 Stochastic Weight Averaging, achieved a test cumulative return of $23.3\%$, a
 Sharpe ratio of $4.21$ and a maximum drawdown of $4.45\%$. We reported these as
