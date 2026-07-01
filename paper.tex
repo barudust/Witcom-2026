@@ -253,9 +253,24 @@ In contrast, a static global threshold would under-represent the active class
 for low-volatility instruments and over-represent noise for volatile ones.
 The per-asset percentile instead produces thresholds ranging from $0.18\%$ (MSFT)
 to $0.86\%$ (ETH), which track each instrument's volatility and keep the three
-classes approximately balanced. Additionally, an
-auxiliary regression target---the return normalized by a 20-day rolling realized
-volatility, lagged one day to avoid leakage---supervises a secondary head.
+classes approximately balanced. Figure~\ref{fig:deadzone} illustrates this on
+three assets of increasing volatility: the dead-zone widens with the
+instrument's typical daily move while the \textsc{hold} share stays near one
+third. Additionally, an auxiliary regression target---the return normalized by a
+20-day rolling realized volatility, lagged one day to avoid leakage---supervises
+a secondary head.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{fig_deadzone.pdf}
+\caption{Per-asset dead-zone labelling on three assets of increasing volatility
+(MSFT, TSLA, ETH). Each panel shows the distribution of daily returns with the
+dashed lines at $\pm\tau_a$ (the 33rd percentile of $|r|$ over the in-sample
+window). The dead-zone (grey, \textsc{hold}) widens with volatility---from
+$\pm0.18\%$ for MSFT to $\pm0.86\%$ for ETH---yet always captures roughly one
+third of the days, keeping the three classes balanced across instruments.}
+\label{fig:deadzone}
+\end{figure}
 
 \paragraph{Temporal splits and tensorization.}
 Each trading day of each asset becomes one training sample. A sample bundles

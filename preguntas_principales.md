@@ -17,7 +17,7 @@ Todas las preguntas se verificaron contra el código y los datos reales. Resumen
 | 3 | Tensorización 2 446 → 1 588/360/496 | Resuelto | §Temporal splits and tensorization: ventana trailing de 30 d con padding; 124/28/39 por acción, 174/40/53 por cripto. |
 | 4 | 40/53 fechas únicas vs samples | Resuelto | Mismo párrafo: fechas las marca la grilla diaria de cripto; weekdays son subconjunto → ≈9 activos/fecha. |
 | 5 | Feriados 191 vs 184 | Corregido | §Weekend consolidation: se quitan findes y precios faltantes; los feriados NO se eliminan aparte → 191 weekdays. |
-| 6 | Figura del dead-zone | Sugerencia (opcional) | Pendiente; hay datos para generarla si se desea. |
+| 6 | Figura del dead-zone | Resuelto | Fig. `fig_deadzone` en §Target construction: MSFT/TSLA/ETH, distribución de retornos con líneas ±τ y regiones SELL/HOLD/BUY. |
 | 7 | Regression head auxiliar | Resuelto | §Regression loss: multi-task, comparte z, solo en training, α=0.8 fijo (barrido 0.55–0.95). |
 | 8 | Concatenación de splits | Resuelto | §Temporal splits: split por activo, samples independientes, sin fuga cross-asset. |
 | 9 | Detalles por branch | Resuelto | §Branch details: capas, dims, decay de filings, bias de atención en log-space. |
