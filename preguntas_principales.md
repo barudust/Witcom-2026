@@ -6,6 +6,24 @@ Estas preguntas no pueden resolverse con lógica pura o conocimiento general; re
 
 ---
 
+## Estado de resolución (redactor)
+
+Todas las preguntas se verificaron contra el código y los datos reales. Resumen de dónde quedó cada respuesta en `paper.tex`:
+
+| # | Tema | Estado | Dónde |
+|---|------|--------|-------|
+| 1 | Class balance 524/529/535 | Resuelto | §Target construction: HOLD fijado por el percentil 33; desviación por ventana 70% vs 65%, τ por activo y drift alcista. |
+| 2 | Lista de las 19 features | Resuelto | Footnote en §Feature engineering (las 19 por categoría). |
+| 3 | Tensorización 2 446 → 1 588/360/496 | Resuelto | §Temporal splits and tensorization: ventana trailing de 30 d con padding; 124/28/39 por acción, 174/40/53 por cripto. |
+| 4 | 40/53 fechas únicas vs samples | Resuelto | Mismo párrafo: fechas las marca la grilla diaria de cripto; weekdays son subconjunto → ≈9 activos/fecha. |
+| 5 | Feriados 191 vs 184 | Corregido | §Weekend consolidation: se quitan findes y precios faltantes; los feriados NO se eliminan aparte → 191 weekdays. |
+| 6 | Figura del dead-zone | Sugerencia (opcional) | Pendiente; hay datos para generarla si se desea. |
+| 7 | Regression head auxiliar | Resuelto | §Regression loss: multi-task, comparte z, solo en training, α=0.8 fijo (barrido 0.55–0.95). |
+| 8 | Concatenación de splits | Resuelto | §Temporal splits: split por activo, samples independientes, sin fuga cross-asset. |
+| 9 | Detalles por branch | Resuelto | §Branch details: capas, dims, decay de filings, bias de atención en log-space. |
+
+---
+
 ## 1. Class balance 524/529/535 — ¿por qué no son exactamente 1/3?
 
 **Contexto:** El paper usa percentil 33 por activo para generar labels (≈1/3 por clase). Los números 524/529/535 son aproximadamente 1/3 de 1,588, pero no exactos.

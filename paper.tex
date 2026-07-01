@@ -165,17 +165,19 @@ fusion mechanism, and the training protocol.
 
 \subsection{Data preprocessing and labeling}
 
-\paragraph{Weekend and holiday consolidation.}
-For equities, weekend and holiday records are removed because US markets do
-not operate on those days. Their associated news are carried forward to the
-next trading day with an exponential temporal decay. The carry-forward weight
-is $w = \exp(-\lambda\,\Delta_{\text{days}})$ where $\lambda = 0.18$ and
-$\Delta_{\text{days}}$ counts only the number of non-trading days between the
-original and the target date. For example, Friday news moved to Monday have
+\paragraph{Weekend consolidation.}
+For equities we remove non-trading rows---identified as weekend days or any day
+with a missing closing price---and carry their news forward to the next trading
+day with an exponential temporal decay. The carry-forward weight is
+$w = \exp(-\lambda\,\Delta_{\text{days}})$ where $\lambda = 0.18$ and
+$\Delta_{\text{days}}$ counts the number of non-trading days between the original
+and the target date. For example, Friday news moved to Monday have
 $\Delta_{\text{days}} = 2$ (Saturday and Sunday), yielding
-$w = \exp(-0.18 \times 2) \approx 0.70$; the same logic applies to multi-day
-holiday breaks. Cryptocurrencies trade seven days a week and therefore require
-no consolidation.
+$w = \exp(-0.18 \times 2) \approx 0.70$. We do \emph{not} additionally drop
+exchange holidays: the source dataset supplies one record per weekday, so each
+equity retains $191$ weekday records over the period (of which a handful are
+NYSE holidays carried in the source with a valid price). Cryptocurrencies trade
+seven days a week and require no consolidation.
 
 \paragraph{Feature engineering.}
 A single feature-engineering module is shared between offline training and the
@@ -185,7 +187,15 @@ Bollinger position, trend slopes, calendar dummies, news counts, filing-decay
 features and cross-asset proxies) we select $19$ features through the combination
 of Spearman correlation, mutual information, LightGBM~\cite{ke2017} gain under a
 purged walk-forward cross-validation with a five-day embargo, and a variance
-inflation factor filter to remove collinear variables.
+inflation factor filter to remove collinear variables.\footnote{The $19$
+retained features are: cross-asset (\texttt{btc\_return\_1d},
+\texttt{mkt\_proxy\_return\_1d}); return/trend (\texttt{return\_5d},
+\texttt{price\_slope\_20d}, \texttt{ema\_26}, \texttt{dist\_from\_max},
+\texttt{gap\_overnight\_proxy}); volatility (\texttt{realized\_vol\_5d},
+\texttt{realized\_vol\_20d}, \texttt{vol\_of\_vol}); momentum
+(\texttt{rsi\_14}, \texttt{macd\_hist}); calendar (\texttt{day\_of\_month},
+\texttt{dow\_1}, \texttt{dow\_2}, \texttt{dow\_4}); news (\texttt{has\_news},
+\texttt{log\_news\_count}); and filing recency (\texttt{days\_since\_10q}).}
 
 \paragraph{Target construction.}
 Let $t$ index trading days and $a \in \{1,\dots,12\}$ index assets. The label
@@ -230,7 +240,15 @@ y_{t,a}=
 \end{cases}
 \end{equation}
 Aggregated across all twelve assets, this procedure yields the near-uniform
-class counts reported in Table~\ref{tab:dataset}.
+class counts reported in Table~\ref{tab:dataset} ($524/529/535$ for
+sell/hold/buy in training). The counts are close to, but not exactly, one third
+each for three reasons: (i) $\tau_a$ is estimated on the $70\%$ window $W_a$ but
+the reported counts are taken over the $65\%$ training rows, a slightly
+different sample; (ii) each asset has its own $\tau_a$, so concatenating twelve
+per-asset series does not preserve the exact per-asset proportions; and (iii)
+the buy/sell split reflects a mild upward drift over the period (buy marginally
+exceeds sell). The hold share stays pinned near one third by construction of the
+$33$rd-percentile dead-zone.
 In contrast, a static global threshold would under-represent the active class
 for low-volatility instruments and over-represent noise for volatile ones.
 The per-asset percentile instead produces thresholds ranging from $0.18\%$ (MSFT)
@@ -240,10 +258,29 @@ auxiliary regression target---the return normalized by a 20-day rolling realized
 volatility, lagged one day to avoid leakage---supervises a secondary head.
 
 \paragraph{Temporal splits and tensorization.}
-With the features and labels defined, the data is split temporally per asset
-into train ($65\%$), validation ($15\%$), and test ($20\%$) partitions. The
-per-asset splits are then concatenated, preserving chronological order and
-preventing look-ahead leakage.
+Each trading day of each asset becomes one training sample. A sample bundles
+(i) the $30$-day trailing window $\mathbf{S}_t$ of scalar features
+(left-padded by repeating the first available day when fewer than $30$ days
+precede $t$, so no future information is used), (ii) the day's news set
+$\mathcal{N}_t$, and (iii) the current filing state $\mathcal{E}_t$. Because the
+window is trailing rather than a strided slice, an asset with $n$ trading days
+yields $n$ samples (minus its final day, which has no next-day return). This
+gives $124/28/39$ train/validation/test samples per equity and $174/40/53$ per
+cryptocurrency; summed over the ten equities and two cryptocurrencies (the two
+crypto series each lose their last day) the totals are $1{,}588/360/496$.
+
+Splitting is performed \emph{per asset} on each asset's own chronological
+timeline, and the resulting samples are pooled into shared train/validation/test
+sets. Samples are mutually independent---each uses only its own asset's past
+window---so pooling them and shuffling the training loader introduces no
+cross-asset look-ahead: an asset's test window always follows its own train and
+validation windows in time. The per-asset split boundaries also align in
+calendar time, since $191$ equity weekdays span essentially the same interval as
+$267$ crypto calendar days; the reported \emph{unique trading dates} ($40$
+validation, $53$ test) are therefore driven by the crypto daily grid, with
+equity weekdays forming a subset. Weekends contribute only the two crypto assets
+while weekdays contribute up to twelve, giving on average $\approx 9$ active
+assets per validation date ($360/40$).
 
 \paragraph{On the estimation window and look-ahead.}
 The window $W_a$ (first $70\%$) is slightly wider than the $65\%$ training split,
@@ -371,6 +408,36 @@ Filing projection
 \end{tabular}
 \end{table}
 
+\paragraph{Branch details.}
+For completeness we specify each branch; all project to $d = 32$ and use dropout
+$0.35$ and GELU activations. \emph{(1) Scalar MLP:}
+$\mathrm{Linear}(19{\to}128) \to \mathrm{GELU} \to \mathrm{Dropout} \to
+\mathrm{Linear}(128{\to}32) \to \mathrm{LayerNorm}$. \emph{(2) PatchTST:} the
+$30$-day window is cut into six non-overlapping patches of length five, each
+flattened over the $19$ features and projected by
+$\mathrm{Linear}(95{\to}32)$; learned positional embeddings are added and two
+transformer blocks ($4$ heads, feed-forward $32{\to}64{\to}32$) are applied,
+followed by mean pooling over patches. The internal model width equals the
+fusion width ($32$). \emph{(3) News attention:} each headline is encoded by the
+frozen FinBERT \texttt{[CLS]} vector ($768$-d); keys and values are
+$\mathrm{Linear}(768{\to}32)$ and the query is $\mathrm{Linear}(9{\to}32)$ of
+the identity vector (8-d symbol embedding $\oplus$ asset-type flag). The
+attention score for headline $i$ is
+$s_i = (\mathbf{q}\!\cdot\!\mathbf{k}_i)/\sqrt{32} + \log w_i$, i.e.\ the temporal
+decay weight enters \emph{additively in log-space} (so $w_i\!\to\!0$ suppresses a
+headline); a softmax over the $\le 8$ headlines gives the pooled vector
+$\sum_i \mathrm{softmax}(s)_i\,\mathbf{v}_i$, followed by
+$\mathrm{Linear}(32{\to}32) + \mathrm{LayerNorm}$. \emph{(4) Filing projection:}
+the running filing embedding is pre-computed by FinBERT ($768$-d; long filings
+are chunked at $384$ tokens and mean-pooled over up to $12$ chunks). When a new
+10-K/10-Q arrives it \emph{replaces} the running embedding and resets its age;
+otherwise the stored vector is scaled element-wise by
+$0.5^{\Delta/45}$ ($45$-day half-life, $\Delta$ = days since the last filing)
+and then projected by
+$\mathrm{Linear}(768{\to}32)\to\mathrm{GELU}\to\mathrm{Dropout}\to
+\mathrm{Linear}(32{\to}32)\to\mathrm{LayerNorm}$. Because FinBERT is frozen, the
+filing and news $768$-d embeddings are fixed inputs, not learned parameters.
+
 \subsection{Gated fusion with availability masking}
 Let $m \in \{1,2,3,4\}$ index the four branches (scalar MLP, PatchTST, news
 attention, filing projection). For a given input, branch $m$ produces a
@@ -482,7 +549,16 @@ is the Huber~\cite{huber1964} loss with $\delta = 1.0$:
 \end{cases}
 \end{equation}
 Huber loss behaves quadratically for small residuals and linearly for large
-ones, making it less sensitive to outliers than mean squared error.
+ones, making it less sensitive to outliers than mean squared error. The
+regression head is an \emph{auxiliary} multi-task signal: it shares the fused
+representation $\mathbf{z}$ with the classifier (the two heads differ only in
+their final linear layers) and provides a denser, magnitude-aware gradient that
+regularises the shared trunk. It is used only during training---at inference the
+trading signal is produced solely by the classification head, so $\tau_a$ and
+the regression target never enter the reported financial metrics. The weight
+$\alpha = 0.8$ was fixed a priori to keep classification dominant; a
+hyperparameter search additionally explored $\alpha \in [0.55, 0.95]$ without a
+consistent improvement, so the default was retained.
 
 \paragraph{Optimizer and schedule.}
 We optimise the total loss with AdamW~\cite{loshchilov2019}, which decouples
